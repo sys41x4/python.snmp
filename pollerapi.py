@@ -1,7 +1,7 @@
 import os, io, sys
 import ujson
-from typing import Union
-from fastapi import FastAPI
+from typing import Optional, Union, List
+from fastapi import FastAPI, Query
 import uvicorn
 
 from modules import snmp_communication_v2 as snmp_comm_v2
@@ -46,7 +46,7 @@ class CONFIG:
             sys.exit()
 
         if(os.path.isfile(self.base_config_data['fp_ip_info'])):
-            self.server_info = self.get_server_info(self.base_config_data['fp_ip_info'])
+            self.server_info = self.get_server_info(self.base_config_data['fp_ip_info'])["snmp"]
             print("SERVER INFO CONFIG | Loaded Successfully")
         else:
             print("SERVER INFO CONFIG FilePath | Not Found | :/")
@@ -78,8 +78,8 @@ except:
    print(help_msg())
    sys.exit()
 
-app = FastAPI()
 
+app = FastAPI()
 
 @app.get("/")
 def root_index():
@@ -94,54 +94,104 @@ def api_info():
 def service_info(service_name: str):
     return {"service": service_name}
 
-@app.get("/api/snmp/get/{request}")
-async def get_snmp_data(request: str):
-    json_data = {'sent':request, 'data':''}
+@app.get("/api/snmp/cmd/get")
+async def get_snmp_cmd_data(cmd: str = Query(...)):
+    json_data = {'sent':cmd, 'data':''}
     try:
-        request=request.split(' ')
-        #data = io.StringIO()
-        #sys.stdout = data
-        json_data['data'] = snmp_comm_v2.snmp_comm(request[0], request[1].split(':')[0], int(request[1].split(':')[1]), request[2])
-        #json_data['data'] = data.getvalue()
-        #data=None
-        #sys.stdout = sys.__stdout__
+        request=cmd.split(' ')
+
+        service_address = request[1].split(':')
+        if(len(service_address)==1):service_address.insert(1, '')
+        json_data['data'] = snmp_comm_v2.snmp_comm(request[0], service_address[0], service_address[1], request[2].replace(' ', '').split(","))
     except Exception as e:
         json_data['data'] = {"error": str(e)}
     return json_data
 
 
-@app.get('/api/snmp/ip/get/{request}')
-async def get_snmp_data_by_ip(request: str):
+@app.get('/api/snmp/get/{request}')
+async def get_snmp_data(request: str):
     json_data = {'sent':request, 'data':''}
 
     try:
-        # json_data['sent'] = request
-        json_data['sent'] = ujson.loads(request) # Format {"ip":<ip>, "uuid":<uuid>, "port":<port>, "community":<community_type>, "version":<snmp_version>, "oid":<oid>}
-        #data = io.StringIO()
-        #sys.stdout = data
-        json_data['data'] = snmp_comm_v2.snmp_comm(json_data['sent']['community'], json_data['sent']['server_ip'], json_data['sent']['server_port'], json_data['sent']['oid'])
-        #json_data['data'] = data.getvalue()
-        #data=None
-        #sys.stdout = sys.__stdout__
+        json_data['sent'] = ujson.loads(request) # Format {"data_by":<uuid/ip/cmd>, "ip":<ip>, "uuid":<uuid>, "port":<port>, "community":<community_type>, "version":<snmp_version>, "oid":<oid>}
+        data_by = str(json_data['sent']['data_by'].lower())
+        if(data_by=='ip'):
+            service_address = json_data['sent']['service_address'].split(':')
+            if(len(service_address)==1):service_address.insert(1, '')
+            json_data['data'] = snmp_comm_v2.snmp_comm(json_data['sent']['community'], service_address[0], service_address[1], json_data['sent']['oid'].replace(' ', '').split(","))
+
+        elif(data_by=='uuid'):
+            for id in config.server_info.keys():
+                if(config.server_info[id]["uuid"]==json_data['sent']['uuid']):
+                    ip_detail = config.server_info[id]
+                    if('oid' in json_data['sent'].keys()):oid=json_data['sent']['oid'].replace(' ', '').split(",")
+
+                    json_data['data'] = snmp_comm_v2.snmp_comm(ip_detail['community'], ip_detail['ip'][0], ip_detail['ip'][1], oid)
+                    break
+
     except Exception as e:
         json_data['data'] = {'error': str(e)}
     return json_data
 
-@app.get('/api/snmp/uuid/get/{request}')
-async def get_snmp_data_by_uuid(request: str):
-    json_data = {'sent':request, 'data':''}
+@app.get('/api/snmp/get')
+async def get_snmp_data_query(data_by: str = Query(...),
+        service_name: str = Query(...),
+        keys: str = Query(...),
+        values: str = Query(...)):
+
+    json_data = {'sent':[data_by, service_name, dict(zip(keys.split(','), values.split(',')))], 'data':''}
+
     try:
-        json_data['sent'] = ujson.loads(json_data['sent']) # Format {"ip":<ip>, "uuid":<uuid>, "port":<port>, "community":<community_type>, "version":<snmp_version>, "oid":<oid>}
-        ip_detail = config.server_info[json_data['sent']['uuid']]
-        #print(ip_detail)
-        #data = io.StringIO()
-        #sys.stdout = data
-        json_data['data'] = snmp_comm_v2.snmp_comm(json_data['sent']['community'], ip_detail['server_ip'], ip_detail['server_port'], json_data['sent']['oid'])
-        #json_data['data'] = ujson.loads(data.getvalue())
-        #data=None
-        #sys.stdout = sys.__stdout__
+        #json_data['sent'] = ujson.loads(request) # Format {"data_by":<uuid/ip/cmd>, "ip":<ip>, "uuid":<uuid>, "port":<port>, "community":<community_type>, "version":<snmp_version>, "oid":<oid>}
+        data_BY = str(json_data["sent"][0].lower())
+        if(data_BY=='ip'):
+            service_address = json_data["sent"][2]['service_address'].split(':')
+            if(len(service_address)==1):service_address.insert(1, '')
+            json_data['data'] = snmp_comm_v2.snmp_comm(json_data["sent"][2]['community'], service_address[0], service_address[1], json_data["sent"][2]['oid'].replace(' ', '').replace("\"", '').replace('\'', '').replace('-', ',').split(","))
+
+        elif(data_BY=='uuid'):
+            for id in config.server_info.keys():
+                if(config.server_info[id]["uuid"]==json_data["sent"][2]['uuid']):
+                    ip_detail = config.server_info[id]
+                    if('oid' in json_data["sent"][2].keys()):oid=json_data["sent"][2]['oid'].replace(' ', '').replace("\"", '').replace('\'', '').replace('-', ',').split(",")
+
+                    json_data['data'] = snmp_comm_v2.snmp_comm(ip_detail['community'], ip_detail['ip'][0], ip_detail['ip'][1], oid)
+                    break
+
     except Exception as e:
-        json_data['data'] = {"error": str(e)}
+        json_data['data'] = {'error': str(e)}
+    except KeyboardInterrupt:pass
+    return json_data
+
+
+@app.post('/api/snmp/get/')
+async def get_snmp_data_post(data_by: str = None, uuid: Optional[str] = None, service_address: Optional[str] = None, community: Optional[str] = None, oid: str = None):
+    formated_json = {"data_by":data_by,
+                     "uuid":uuid,
+                     "service_address":service_address,
+                     "community":community,
+                     "oid":oid
+                     }
+    json_data = {'sent':{k: v for k, v in formated_json.items() if v is not None}, 'data':''}
+
+    try:
+        #json_data['sent'] = ujson.loads(request) # Format {"data_by":<uuid/ip/cmd>, "ip":<ip>, "uuid":<uuid>, "port":<port>, "community":<community_type>, "version":<snmp_version>, "oid":<oid>}
+        if(json_data.data_by=='ip'):
+            service_address = json_data['sent']['service_address'].split(':')
+            if(len(service_address)==1):service_address.insert(1, '')
+            json_data['data'] = snmp_comm_v2.snmp_comm(json_data['sent']['community'], service_address[0], service_address[1], json_data['sent']['oid'].replace(' ', '').split(","))
+
+        elif(data_by=='uuid'):
+            for id in config.server_info.keys():
+                if(config.server_info[id]["uuid"]==json_data['sent']['uuid']):
+                    ip_detail = config.server_info[id]
+                    if('oid' in json_data['sent'].keys()):oid=json_data['sent']['oid'].replace(" ", '').split(",")
+
+                    json_data['data'] = snmp_comm_v2.snmp_comm(ip_detail['community'], ip_detail['ip'][0], ip_detail['ip'][1], oid)
+                    break
+
+    except Exception as e:
+        json_data['data'] = {'error': str(e)}
     return json_data
 
 if __name__ == "__main__":
